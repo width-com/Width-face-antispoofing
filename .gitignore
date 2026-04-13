@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Models (too large for git)
+models/*.pth
+models/*.pth.tar
+models/*.pt
+
+# Data / images
+faces/
+faces.zip
+
+# Server runtime
+.server.log
+.server.pid
+.tunnel.log
+.tunnel.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
