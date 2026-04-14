@@ -8,7 +8,7 @@ Face liveness detection service based on FLIP (Cross-domain Face Anti-spoofing w
 
 ```
 Production: https://<your-domain>.trycloudflare.com
-Local:      http://localhost:8000
+Local:      http://localhost:5010
 ```
 
 ---
@@ -19,11 +19,17 @@ Detect whether a face image is real (live) or spoofed (attack).
 
 ### Request
 
+Support one of the following inputs:
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| image | File | Yes | Image file (JPEG/PNG/BMP/WebP), any resolution |
+| image | File | No | Image file (JPEG/PNG/BMP/WebP), any resolution |
+| image_base64 | String | No | Base64 image bytes, supports plain base64 or `data:image/...;base64,...` |
+| s3_uri | String | No | S3 URI such as `s3://bucket/path/to/image.jpg` |
 
-**Content-Type:** `multipart/form-data`
+Exactly one input source is required.
+
+**Content-Type:** `multipart/form-data` or `application/json`
 
 ### Response
 
@@ -92,6 +98,31 @@ if result["code"] == 200:
     print(f"CeFA: {data['cefa_score']:.4f}")
     print(f"WMCA: {data['wmca_score']:.4f}")
     print(f"SURF: {data['surf_score']:.4f}")
+```
+
+### Python (base64)
+
+```python
+import base64
+import requests
+
+url = "https://<BASE_URL>/predict"
+
+with open("face.jpg", "rb") as f:
+    image_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+resp = requests.post(url, json={"image_base64": image_base64})
+print(resp.json())
+```
+
+### Python (S3 URI)
+
+```python
+import requests
+
+url = "https://<BASE_URL>/predict"
+resp = requests.post(url, json={"s3_uri": "s3://workflow-kyc/kyc_ocr_front.jpg"})
+print(resp.json())
 ```
 
 ### Python (aiohttp)

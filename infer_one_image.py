@@ -67,17 +67,17 @@ def _repack_dir_to_zip_for_torch_load(dir_path: str) -> str:
 
 def load_ckpt_any(ckpt_path: str, device: str):
     if os.path.isfile(ckpt_path):
-        return torch.load(ckpt_path, map_location=device)
+        return torch.load(ckpt_path, map_location=device, weights_only=False)
 
     if os.path.isdir(ckpt_path):
         try:
-            return torch.load(ckpt_path, map_location=device)
+            return torch.load(ckpt_path, map_location=device, weights_only=False)
         except Exception:
             pass
 
         if _is_unpacked_checkpoint_dir(ckpt_path):
             repacked = _repack_dir_to_zip_for_torch_load(ckpt_path)
-            return torch.load(repacked, map_location=device)
+            return torch.load(repacked, map_location=device, weights_only=False)
 
     raise FileNotFoundError(f"Cannot load checkpoint from: {ckpt_path}")
 
@@ -228,4 +228,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
