@@ -218,6 +218,28 @@ def resolve_image_bytes() -> bytes:
     raise ValueError("Provide one of: image file, image_base64, or s3_uri")
 
 
+def resolve_image_bytes_from_item(item: Any) -> bytes:
+    if isinstance(item, str):
+        return decode_base64_image(item)
+    if isinstance(item, dict):
+        image_base64 = item.get("image_base64") or item.get("base64")
+        if image_base64:
+            return decode_base64_image(str(image_base64))
+        s3_uri = item.get("s3_uri") or item.get("image_s3_uri")
+        if s3_uri:
+            return download_s3_image_bytes(str(s3_uri))
+    raise ValueError("Each image item must be a base64 string or object with image_base64/s3_uri")
+
+
+def infer_image(pil_img: Image.Image) -> Dict[str, Any]:
+    x = build_test_transform()(pil_img).unsqueeze(0).to(DEVICE)
+    results = infer_all_models_parallel(x)
+    labels = [r["label"] for r in results.values()]
+    voted_label = "real" if labels.count("real") > labels.count("spoof") else "spoof"
+    avg_score = sum(r["score_real"] for r in results.values()) / len(results)
+    return {"label": voted_label, "score": avg_score}
+
+
 @app.before_request
 def warmup_models():
     ensure_models_loaded()
@@ -250,23 +272,14 @@ def predict():
         )
 
     try:
-        x = build_test_transform()(pil_img).unsqueeze(0).to(DEVICE)
-        results = infer_all_models_parallel(x)
-        labels = [result["label"] for result in results.values()]
-        real_votes = labels.count("real")
-        spoof_votes = labels.count("spoof")
-        voted_label = "real" if real_votes > spoof_votes else "spoof"
-        avg_score = sum(result["score_real"] for result in results.values()) / len(results)
+        result = infer_image(pil_img)
         return jsonify(
             {
                 "code": 200,
                 "message": "success",
                 "data": {
-                    "label": voted_label,
-                    "score": round(avg_score, 6),
-                    "cefa_score": round(results["cefa"]["score_real"], 6),
-                    "wmca_score": round(results["wmca"]["score_real"], 6),
-                    "surf_score": round(results["surf"]["score_real"], 6),
+                    "label": result["label"],
+                    "score": round(result["score"], 6),
                 },
             }
         )
@@ -276,6 +289,50 @@ def predict():
             jsonify({"code": 500, "message": f"Inference error: {exc}", "data": None}),
             500,
         )
+
+
+@app.post("/predict_batch")
+def predict_batch():
+    payload: Dict[str, Any] = request.get_json(silent=True) or {}
+    images_raw = payload.get("images")
+    if not isinstance(images_raw, list) or len(images_raw) == 0:
+        return (
+            jsonify({"code": 400, "message": "images must be a non-empty array", "data": None}),
+            400,
+        )
+
+    per_image_results = []
+    for idx, item in enumerate(images_raw):
+        try:
+            img_bytes = resolve_image_bytes_from_item(item)
+            pil_img = read_image_from_bytes(img_bytes)
+        except Exception as exc:
+            return (
+                jsonify({"code": 400, "message": f"Invalid image at index {idx}: {exc}", "data": None}),
+                400,
+            )
+        try:
+            per_image_results.append(infer_image(pil_img))
+        except Exception as exc:
+            logger.exception("Inference error at index %d", idx)
+            return (
+                jsonify({"code": 500, "message": f"Inference error at index {idx}: {exc}", "data": None}),
+                500,
+            )
+
+    all_labels = [r["label"] for r in per_image_results]
+    final_label = "real" if all_labels.count("real") > all_labels.count("spoof") else "spoof"
+    final_score = sum(r["score"] for r in per_image_results) / len(per_image_results)
+    return jsonify(
+        {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "label": final_label,
+                "score": round(final_score, 6),
+            },
+        }
+    )
 
 
 if __name__ == "__main__":
