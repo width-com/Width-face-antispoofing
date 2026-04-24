@@ -53,6 +53,7 @@ MODEL_DOWNLOAD_LINKS = {
     "surf": "https://mbzuaiac-my.sharepoint.com/:u:/g/personal/koushik_srivatsan_mbzuai_ac_ae/EdbVYxkP21pPmIhdkl6n7joBEZyKennbpsoBloZma4FYnw?e=OJFqfQ",
 }
 IMAGE_SIZE = 224
+REAL_THRESHOLD = float(os.getenv("REAL_THRESHOLD", "0.3"))
 DEFAULT_AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 INFERENCE_WORKERS = len(MODEL_PATHS)
 
@@ -147,10 +148,10 @@ def infer_single_model(model: flip_mcl, x: torch.Tensor) -> Dict[str, Any]:
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
     logits = cached_logit_scale * image_features @ cached_text_features.t()
     probs = F.softmax(logits, dim=1)[0]
-    pred = int(torch.argmax(probs).item())
+    score_real = float(probs[1].item())
     return {
-        "label": "real" if pred == 1 else "spoof",
-        "score_real": float(probs[1].item()),
+        "label": "real" if score_real >= REAL_THRESHOLD else "spoof",
+        "score_real": score_real,
         "score_spoof": float(probs[0].item()),
     }
 
