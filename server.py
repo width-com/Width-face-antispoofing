@@ -53,7 +53,7 @@ MODEL_DOWNLOAD_LINKS = {
     "surf": "https://mbzuaiac-my.sharepoint.com/:u:/g/personal/koushik_srivatsan_mbzuai_ac_ae/EdbVYxkP21pPmIhdkl6n7joBEZyKennbpsoBloZma4FYnw?e=OJFqfQ",
 }
 IMAGE_SIZE = 224
-REAL_THRESHOLD = float(os.getenv("REAL_THRESHOLD", "0.3"))
+REAL_THRESHOLD = float(os.getenv("REAL_THRESHOLD", "0.15"))
 DEFAULT_AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 INFERENCE_WORKERS = len(MODEL_PATHS)
 
