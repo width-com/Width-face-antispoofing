@@ -344,20 +344,24 @@ def predict():
         )
 
 
-@app.post("/predict_batch")
-def predict_batch():
+def _run_batch(tag: str):
+    """Shared batch pipeline. Returns (flask_response, status_code).
+
+    Status code is None on success; payload contains final_label, final_score, per_image_results.
+    """
     t0 = time.time()
     payload: Dict[str, Any] = request.get_json(silent=True) or {}
     images_raw = payload.get("images")
     n = len(images_raw) if isinstance(images_raw, list) else 0
-    logger.info("[/predict_batch] request from %s, images=%d", request.remote_addr, n)
+    logger.info("[%s] request from %s, images=%d", tag, request.remote_addr, n)
 
     if not isinstance(images_raw, list) or len(images_raw) == 0:
         elapsed = (time.time() - t0) * 1000
-        logger.warning("[/predict_batch] 400 images must be a non-empty array (%.1fms)", elapsed)
+        logger.warning("[%s] 400 images must be a non-empty array (%.1fms)", tag, elapsed)
         return (
             jsonify({"code": 400, "message": "images must be a non-empty array", "data": None}),
             400,
+            None,
         )
 
     per_image_results = []
@@ -365,19 +369,21 @@ def predict_batch():
         try:
             img_bytes, source_desc = resolve_image_bytes_from_item(item)
             pil_img = read_image_from_bytes(img_bytes)
-            logger.info("[/predict_batch] image[%d] source=%s", idx, source_desc)
+            logger.info("[%s] image[%d] source=%s", tag, idx, source_desc)
         except Exception as exc:
             elapsed = (time.time() - t0) * 1000
-            logger.warning("[/predict_batch] 400 invalid image at index %d: %s (%.1fms)", idx, exc, elapsed)
+            logger.warning("[%s] 400 invalid image at index %d: %s (%.1fms)", tag, idx, exc, elapsed)
             return (
                 jsonify({"code": 400, "message": f"Invalid image at index {idx}: {exc}", "data": None}),
                 400,
+                None,
             )
         try:
             r = infer_image(pil_img)
             per_image_results.append(r)
             logger.info(
-                "[/predict_batch] image[%d] per_model: %s | voted: label=%s score=%.6f",
+                "[%s] image[%d] per_model: %s | voted: label=%s score=%.6f",
+                tag,
                 idx,
                 format_per_model(r["per_model"]),
                 r["label"],
@@ -385,10 +391,11 @@ def predict_batch():
             )
         except Exception as exc:
             elapsed = (time.time() - t0) * 1000
-            logger.exception("[/predict_batch] 500 inference error at index %d (%.1fms)", idx, elapsed)
+            logger.exception("[%s] 500 inference error at index %d (%.1fms)", tag, idx, elapsed)
             return (
                 jsonify({"code": 500, "message": f"Inference error at index {idx}: {exc}", "data": None}),
                 500,
+                None,
             )
 
     all_labels = [r["label"] for r in per_image_results]
@@ -396,12 +403,42 @@ def predict_batch():
     final_score = max(r["score"] for r in per_image_results if r["label"] == final_label)
     elapsed = (time.time() - t0) * 1000
     logger.info(
-        "[/predict_batch] final: label=%s score=%.6f (per_image_labels=%s) | %.1fms",
+        "[%s] final: label=%s score=%.6f (per_image_labels=%s) | %.1fms",
+        tag,
         final_label,
         final_score,
         all_labels,
         elapsed,
     )
+    return (None, None, {
+        "final_label": final_label,
+        "final_score": final_score,
+        "per_image_results": per_image_results,
+    })
+
+
+@app.post("/predict_batch")
+def predict_batch():
+    err, status, data = _run_batch("/predict_batch")
+    if err is not None:
+        return err, status
+    return jsonify(
+        {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "label": data["final_label"],
+                "score": round(data["final_score"], 6),
+            },
+        }
+    )
+
+
+@app.post("/predict_batch_with_log")
+def predict_batch_with_log():
+    err, status, data = _run_batch("/predict_batch_with_log")
+    if err is not None:
+        return err, status
     images_detail = [
         {
             "label": r["label"],
@@ -410,15 +447,15 @@ def predict_batch():
                 name: round(m["score_real"], 6) for name, m in r["per_model"].items()
             },
         }
-        for r in per_image_results
+        for r in data["per_image_results"]
     ]
     return jsonify(
         {
             "code": 200,
             "message": "success",
             "data": {
-                "label": final_label,
-                "score": round(final_score, 6),
+                "label": data["final_label"],
+                "score": round(data["final_score"], 6),
                 "images": images_detail,
             },
         }
