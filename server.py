@@ -239,12 +239,12 @@ def resolve_image_bytes_from_item(item: Any) -> Tuple[bytes, str]:
 
 
 def infer_image(pil_img: Image.Image) -> Dict[str, Any]:
+    """Per-image: score = max(model score_real); label = real iff score >= REAL_THRESHOLD."""
     x = build_test_transform()(pil_img).unsqueeze(0).to(DEVICE)
     results = infer_all_models_parallel(x)
-    labels = [r["label"] for r in results.values()]
-    voted_label = "real" if labels.count("real") > labels.count("spoof") else "spoof"
-    avg_score = sum(r["score_real"] for r in results.values()) / len(results)
-    return {"label": voted_label, "score": avg_score, "per_model": results}
+    max_score = max(r["score_real"] for r in results.values())
+    label = "real" if max_score >= REAL_THRESHOLD else "spoof"
+    return {"label": label, "score": max_score, "per_model": results}
 
 
 def format_per_model(per_model: Dict[str, Dict[str, Any]]) -> str:
@@ -371,7 +371,7 @@ def predict_batch():
 
     all_labels = [r["label"] for r in per_image_results]
     final_label = "real" if all_labels.count("real") > all_labels.count("spoof") else "spoof"
-    final_score = sum(r["score"] for r in per_image_results) / len(per_image_results)
+    final_score = max(r["score"] for r in per_image_results if r["label"] == final_label)
     elapsed = (time.time() - t0) * 1000
     logger.info(
         "[/predict_batch] final: label=%s score=%.6f (per_image_labels=%s) | %.1fms",
