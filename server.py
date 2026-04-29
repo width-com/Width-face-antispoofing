@@ -299,6 +299,9 @@ def predict():
             result["score"],
             elapsed,
         )
+        models_scores = {
+            name: round(r["score_real"], 6) for name, r in result["per_model"].items()
+        }
         return jsonify(
             {
                 "code": 200,
@@ -306,6 +309,7 @@ def predict():
                 "data": {
                     "label": result["label"],
                     "score": round(result["score"], 6),
+                    "models": models_scores,
                 },
             }
         )
@@ -376,6 +380,16 @@ def predict_batch():
         all_labels,
         elapsed,
     )
+    images_detail = [
+        {
+            "label": r["label"],
+            "score": round(r["score"], 6),
+            "models": {
+                name: round(m["score_real"], 6) for name, m in r["per_model"].items()
+            },
+        }
+        for r in per_image_results
+    ]
     return jsonify(
         {
             "code": 200,
@@ -383,6 +397,7 @@ def predict_batch():
             "data": {
                 "label": final_label,
                 "score": round(final_score, 6),
+                "images": images_detail,
             },
         }
     )
