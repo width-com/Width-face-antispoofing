@@ -10,6 +10,7 @@ import os
 import site
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -39,7 +40,10 @@ from infer_one_image import (
 )
 from prompt_templates import real_templates, spoof_templates
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -197,12 +201,12 @@ def download_s3_image_bytes(s3_uri: str) -> bytes:
     return obj["Body"].read()
 
 
-def resolve_image_bytes() -> bytes:
+def resolve_image_bytes() -> Tuple[bytes, str]:
     image = request.files.get("image")
     if image is not None:
         img_bytes = image.read()
         if img_bytes:
-            return img_bytes
+            return img_bytes, f"file:{image.filename or 'upload'}({len(img_bytes)}B)"
 
     payload: Dict[str, Any] = request.get_json(silent=True) or {}
     if not payload:
@@ -210,25 +214,27 @@ def resolve_image_bytes() -> bytes:
 
     image_base64 = payload.get("image_base64") or payload.get("base64")
     if image_base64:
-        return decode_base64_image(str(image_base64))
+        b64_str = str(image_base64)
+        return decode_base64_image(b64_str), f"base64({len(b64_str)} chars)"
 
     s3_uri = payload.get("s3_uri") or payload.get("image_s3_uri")
     if s3_uri:
-        return download_s3_image_bytes(str(s3_uri))
+        return download_s3_image_bytes(str(s3_uri)), f"s3:{s3_uri}"
 
     raise ValueError("Provide one of: image file, image_base64, or s3_uri")
 
 
-def resolve_image_bytes_from_item(item: Any) -> bytes:
+def resolve_image_bytes_from_item(item: Any) -> Tuple[bytes, str]:
     if isinstance(item, str):
-        return decode_base64_image(item)
+        return decode_base64_image(item), f"base64({len(item)} chars)"
     if isinstance(item, dict):
         image_base64 = item.get("image_base64") or item.get("base64")
         if image_base64:
-            return decode_base64_image(str(image_base64))
+            b64_str = str(image_base64)
+            return decode_base64_image(b64_str), f"base64({len(b64_str)} chars)"
         s3_uri = item.get("s3_uri") or item.get("image_s3_uri")
         if s3_uri:
-            return download_s3_image_bytes(str(s3_uri))
+            return download_s3_image_bytes(str(s3_uri)), f"s3:{s3_uri}"
     raise ValueError("Each image item must be a base64 string or object with image_base64/s3_uri")
 
 
@@ -238,7 +244,13 @@ def infer_image(pil_img: Image.Image) -> Dict[str, Any]:
     labels = [r["label"] for r in results.values()]
     voted_label = "real" if labels.count("real") > labels.count("spoof") else "spoof"
     avg_score = sum(r["score_real"] for r in results.values()) / len(results)
-    return {"label": voted_label, "score": avg_score}
+    return {"label": voted_label, "score": avg_score, "per_model": results}
+
+
+def format_per_model(per_model: Dict[str, Dict[str, Any]]) -> str:
+    return ", ".join(
+        f"{name}={r['label']}/{r['score_real']:.4f}" for name, r in per_model.items()
+    )
 
 
 @app.before_request
@@ -263,10 +275,15 @@ def static_files(filename: str):
 
 @app.post("/predict")
 def predict():
+    t0 = time.time()
+    logger.info("[/predict] request from %s", request.remote_addr)
     try:
-        img_bytes = resolve_image_bytes()
+        img_bytes, source_desc = resolve_image_bytes()
         pil_img = read_image_from_bytes(img_bytes)
+        logger.info("[/predict] source=%s", source_desc)
     except Exception as exc:
+        elapsed = (time.time() - t0) * 1000
+        logger.warning("[/predict] 400 invalid image: %s (%.1fms)", exc, elapsed)
         return (
             jsonify({"code": 400, "message": f"Invalid image: {exc}", "data": None}),
             400,
@@ -274,6 +291,14 @@ def predict():
 
     try:
         result = infer_image(pil_img)
+        elapsed = (time.time() - t0) * 1000
+        logger.info(
+            "[/predict] per_model: %s | final: label=%s score=%.6f | %.1fms",
+            format_per_model(result["per_model"]),
+            result["label"],
+            result["score"],
+            elapsed,
+        )
         return jsonify(
             {
                 "code": 200,
@@ -285,7 +310,8 @@ def predict():
             }
         )
     except Exception as exc:
-        logger.exception("Inference error")
+        elapsed = (time.time() - t0) * 1000
+        logger.exception("[/predict] 500 inference error (%.1fms)", elapsed)
         return (
             jsonify({"code": 500, "message": f"Inference error: {exc}", "data": None}),
             500,
@@ -294,9 +320,15 @@ def predict():
 
 @app.post("/predict_batch")
 def predict_batch():
+    t0 = time.time()
     payload: Dict[str, Any] = request.get_json(silent=True) or {}
     images_raw = payload.get("images")
+    n = len(images_raw) if isinstance(images_raw, list) else 0
+    logger.info("[/predict_batch] request from %s, images=%d", request.remote_addr, n)
+
     if not isinstance(images_raw, list) or len(images_raw) == 0:
+        elapsed = (time.time() - t0) * 1000
+        logger.warning("[/predict_batch] 400 images must be a non-empty array (%.1fms)", elapsed)
         return (
             jsonify({"code": 400, "message": "images must be a non-empty array", "data": None}),
             400,
@@ -305,17 +337,29 @@ def predict_batch():
     per_image_results = []
     for idx, item in enumerate(images_raw):
         try:
-            img_bytes = resolve_image_bytes_from_item(item)
+            img_bytes, source_desc = resolve_image_bytes_from_item(item)
             pil_img = read_image_from_bytes(img_bytes)
+            logger.info("[/predict_batch] image[%d] source=%s", idx, source_desc)
         except Exception as exc:
+            elapsed = (time.time() - t0) * 1000
+            logger.warning("[/predict_batch] 400 invalid image at index %d: %s (%.1fms)", idx, exc, elapsed)
             return (
                 jsonify({"code": 400, "message": f"Invalid image at index {idx}: {exc}", "data": None}),
                 400,
             )
         try:
-            per_image_results.append(infer_image(pil_img))
+            r = infer_image(pil_img)
+            per_image_results.append(r)
+            logger.info(
+                "[/predict_batch] image[%d] per_model: %s | voted: label=%s score=%.6f",
+                idx,
+                format_per_model(r["per_model"]),
+                r["label"],
+                r["score"],
+            )
         except Exception as exc:
-            logger.exception("Inference error at index %d", idx)
+            elapsed = (time.time() - t0) * 1000
+            logger.exception("[/predict_batch] 500 inference error at index %d (%.1fms)", idx, elapsed)
             return (
                 jsonify({"code": 500, "message": f"Inference error at index {idx}: {exc}", "data": None}),
                 500,
@@ -324,6 +368,14 @@ def predict_batch():
     all_labels = [r["label"] for r in per_image_results]
     final_label = "real" if all_labels.count("real") > all_labels.count("spoof") else "spoof"
     final_score = sum(r["score"] for r in per_image_results) / len(per_image_results)
+    elapsed = (time.time() - t0) * 1000
+    logger.info(
+        "[/predict_batch] final: label=%s score=%.6f (per_image_labels=%s) | %.1fms",
+        final_label,
+        final_score,
+        all_labels,
+        elapsed,
+    )
     return jsonify(
         {
             "code": 200,

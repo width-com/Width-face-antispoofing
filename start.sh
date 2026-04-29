@@ -92,19 +92,25 @@ cd "$WORK_DIR"
 echo "[*] Starting FLIP server with gunicorn on ${HOST}:${PORT} ..."
 if [ "$RUN_MODE" = "foreground" ]; then
     echo "[*] Running in foreground mode"
-    exec "$CONDA_BIN" run -n "$CONDA_ENV" gunicorn \
+    exec "$CONDA_BIN" run --no-capture-output -n "$CONDA_ENV" gunicorn \
         --bind "${HOST}:${PORT}" \
         --workers "$GUNICORN_WORKERS" \
         --threads "$GUNICORN_THREADS" \
         --timeout "$GUNICORN_TIMEOUT" \
+        --access-logfile - \
+        --error-logfile - \
+        --capture-output \
         server:app
 fi
 
-nohup "$CONDA_BIN" run -n "$CONDA_ENV" gunicorn \
+nohup "$CONDA_BIN" run --no-capture-output -n "$CONDA_ENV" gunicorn \
     --bind "${HOST}:${PORT}" \
     --workers "$GUNICORN_WORKERS" \
     --threads "$GUNICORN_THREADS" \
     --timeout "$GUNICORN_TIMEOUT" \
+    --access-logfile - \
+    --error-logfile - \
+    --capture-output \
     server:app \
     > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
