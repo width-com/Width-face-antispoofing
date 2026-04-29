@@ -239,12 +239,34 @@ def resolve_image_bytes_from_item(item: Any) -> Tuple[bytes, str]:
 
 
 def infer_image(pil_img: Image.Image) -> Dict[str, Any]:
-    """Per-image: score = max(model score_real); label = real iff score >= REAL_THRESHOLD."""
+    """Per-image: score = max(model score_real); label = real iff score >= REAL_THRESHOLD.
+
+    Decay rule: if any model's score_real == 0 exactly, multiply all other (non-zero)
+    model scores by 0.2 before taking the max.
+    """
     x = build_test_transform()(pil_img).unsqueeze(0).to(DEVICE)
     results = infer_all_models_parallel(x)
-    max_score = max(r["score_real"] for r in results.values())
+    raw_scores = {name: r["score_real"] for name, r in results.items()}
+
+    decay_applied = any(s == 0.0 for s in raw_scores.values())
+    if decay_applied:
+        adjusted = {n: (s if s == 0.0 else s * 0.2) for n, s in raw_scores.items()}
+        logger.info(
+            "decay applied (zero detected): raw=%s -> adjusted=%s",
+            {n: round(s, 6) for n, s in raw_scores.items()},
+            {n: round(s, 6) for n, s in adjusted.items()},
+        )
+    else:
+        adjusted = raw_scores
+
+    max_score = max(adjusted.values())
     label = "real" if max_score >= REAL_THRESHOLD else "spoof"
-    return {"label": label, "score": max_score, "per_model": results}
+    return {
+        "label": label,
+        "score": max_score,
+        "per_model": results,
+        "decay_applied": decay_applied,
+    }
 
 
 def format_per_model(per_model: Dict[str, Dict[str, Any]]) -> str:
